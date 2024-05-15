@@ -1,4 +1,3 @@
-
 const dynamodbManager = require('./dynamodbManager');
 const paymentManager = require('./paymentManager');
 exports.handler = async (event) => {
