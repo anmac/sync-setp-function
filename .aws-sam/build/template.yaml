@@ -1,0 +1,158 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Resources:
+  SAMLogs:
+    Type: AWS::Logs::LogGroup
+  OrdersApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      FailOnWarnings: true
+      DefinitionBody:
+        info:
+          version: '1.0'
+          title:
+            Ref: AWS::StackName
+        paths:
+          /order:
+            post:
+              responses:
+                default:
+                  description: Default response for POST /
+              x-amazon-apigateway-integration:
+                integrationSubtype: StepFunctions-StartSyncExecution
+                credentials:
+                  Fn::GetAtt:
+                  - HttpApiRole
+                  - Arn
+                requestParameters:
+                  Input: $request.body
+                  StateMachineArn:
+                    Ref: OrderStateMachine
+                payloadFormatVersion: '1.0'
+                type: aws_proxy
+                connectionType: INTERNET
+        openapi: 3.0.1
+        x-amazon-apigateway-cors:
+          allowMethods:
+          - POST
+          allowHeaders:
+          - content-type
+          maxAge: 0
+          allowCredentials: false
+          allowOrigins:
+          - '*'
+        x-amazon-apigateway-importexport-version: '1.0'
+  OrderStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Type: EXPRESS
+      DefinitionUri: ../../order.asl.json
+      DefinitionSubstitutions:
+        MakePaymentFunctionArn:
+          Fn::GetAtt:
+          - MakePaymentFunction
+          - Arn
+        MakeOrderFunctionArn:
+          Fn::GetAtt:
+          - MakeOrderFunction
+          - Arn
+        OrderFailureFunctionArn:
+          Fn::GetAtt:
+          - OrderFailureFunction
+          - Arn
+      Logging:
+        Destinations:
+        - CloudWatchLogsLogGroup:
+            LogGroupArn:
+              Fn::GetAtt:
+              - SAMLogs
+              - Arn
+        IncludeExecutionData: true
+        Level: ALL
+      Policies:
+      - LambdaInvokePolicy:
+          FunctionName:
+            Ref: MakePaymentFunction
+      - LambdaInvokePolicy:
+          FunctionName:
+            Ref: MakeOrderFunction
+      - LambdaInvokePolicy:
+          FunctionName:
+            Ref: OrderFailureFunction
+      - CloudWatchLogsFullAccess
+  MakePaymentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: MakePaymentFunction
+      Handler: payment.handler
+      Runtime: nodejs20.x
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: OrdersTable
+      Environment:
+        Variables:
+          ORDERS_TABLE:
+            Ref: OrdersTable
+    Metadata:
+      SamResourceId: MakePaymentFunction
+  MakeOrderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: MakeOrderFunction
+      Handler: order.handler
+      Runtime: nodejs20.x
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: OrdersTable
+      Environment:
+        Variables:
+          ORDERS_TABLE:
+            Ref: OrdersTable
+    Metadata:
+      SamResourceId: MakeOrderFunction
+  OrderFailureFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: OrderFailureFunction
+      Handler: orderFailure.handler
+      Runtime: nodejs20.x
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: OrdersTable
+      Environment:
+        Variables:
+          ORDERS_TABLE:
+            Ref: OrdersTable
+    Metadata:
+      SamResourceId: OrderFailureFunction
+  OrdersTable:
+    Type: AWS::Serverless::SimpleTable
+  HttpApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - apigateway.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Policies:
+      - PolicyName: AllowSFNExec
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: states:StartSyncExecution
+            Resource:
+              Ref: OrderStateMachine
+Outputs:
+  OrderApi:
+    Description: API Gateway endpoint URL for Prod stage for Order function
+    Value:
+      Fn::Sub: https://${OrdersApi}.execute-api.${AWS::Region}.amazonaws.com/order
